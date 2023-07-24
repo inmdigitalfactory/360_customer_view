@@ -1,0 +1,557 @@
+--------------DEMOGRAPHICS--------------------
+-------------------      ------------------------
+
+SELECT * FROM DEMOGRAPHICS360
+
+-----edited_final_version-----
+SELECT 
+    cif_id,
+    maritalstatus,
+    customergender,
+    customerincome,
+    segmentname,
+    customertype,
+    desc_nationality,
+    isresident,
+    is_diaspora_customer,
+    customerstatus,
+    postalcode,
+    accountcurrency,
+    age,
+    years_with_bank,
+    COUNT(distinct acct_num) AS count_accounts,
+    segmentation_class,
+    sol_desc,
+    LISTAGG(schm_desc, ' | ') WITHIN GROUP (ORDER BY schm_desc) AS schm_desc_concatenated,
+    customer_sector,
+    customer_id_availability
+FROM
+    demographics360
+--WHERE cif_id IN ('0017915', '0129086', '0154388', '0025870')
+GROUP BY
+    cif_id,
+    maritalstatus,
+    customergender,
+    customerincome,
+    segmentname,
+    customertype,
+    desc_nationality,
+    isresident,
+    is_diaspora_customer,
+    customerstatus,
+    postalcode,
+    accountcurrency,
+    age,
+    years_with_bank,
+    segmentation_class,
+    sol_desc,
+    customer_sector,
+    customer_id_availability
+ORDER BY cif_id DESC
+
+
+
+
+-------------PRODUCTS---------------
+------------------------------------------------
+
+
+SELECT gam.cif_id, COUNT(DISTINCT gsp.schm_desc) AS products
+FROM tbaadm.gam@fin10 gam
+LEFT JOIN tbaadm.gsp@fin10 gsp ON gsp.schm_code = gam.schm_code
+WHERE gam.cif_id IN (SELECT CIF_ID FROM imke.asha_MasterCte@edwdblnk)
+GROUP BY gam.cif_id;
+
+--------earliest/last -------
+
+WITH CTE_EARLIEST AS (
+    SELECT 
+        gam.CUST_ID, 
+        gsp.schm_desc AS earliest_schm_desc, 
+        ROW_NUMBER() OVER(PARTITION BY gam.CUST_ID ORDER BY gam.ACCT_OPN_DATE ASC) AS rn
+    FROM 
+        tbaadm.gam@fin10 gam
+    LEFT JOIN 
+        tbaadm.gsp@fin10 gsp ON gsp.schm_code = gam.schm_code
+    WHERE 
+        gam.cif_id IN (SELECT CIF_ID FROM imke.asha_MasterCte@edwdblnk)
+),
+CTE_LATEST AS (
+    SELECT 
+        gam.CUST_ID, 
+        gsp.schm_desc AS latest_schm_desc, 
+        ROW_NUMBER() OVER(PARTITION BY gam.CUST_ID ORDER BY gam.ACCT_OPN_DATE DESC) AS rn
+    FROM 
+        tbaadm.gam@fin10 gam
+    LEFT JOIN 
+        tbaadm.gsp@fin10 gsp ON gsp.schm_code = gam.schm_code
+    WHERE 
+        gam.cif_id IN (SELECT CIF_ID FROM imke.asha_MasterCte@edwdblnk)
+)
+SELECT 
+    e.CUST_ID, 
+    e.earliest_schm_desc, 
+    l.latest_schm_desc
+FROM 
+    CTE_EARLIEST e
+JOIN 
+    CTE_LATEST l ON e.CUST_ID = l.CUST_ID
+WHERE 
+    e.rn = 1 AND l.rn = 1;
+
+--------AVERAGE ACCOUNT BALANCE-------
+
+*PYTHON NOTEBOOK*
+
+
+
+---------------------ACCOUNT FREEEZES-----------------------
+
+SELECT cif_id,COUNT(LAST_FREZ_DATE) 
+FROM  tbaadm.gam@fin10
+WHERE LAST_FREZ_DATE IS NOT NULL
+AND 
+    gam.cif_id IN (SELECT cif_id FROM DEMOGRAPHICS360)
+GROUP BY cif_id;
+
+
+---------------------transaction-----------------------
+
+
+create table tranCTs_360 as (
+SELECT /*+ PARALLEL(20) */
+    gam.cif_id, 
+    CASE 
+    WHEN htd.TRAN_CRNCY_CODE != 'KES' THEN (htd.tran_amt * rth.VAR_CRNCY_UNITS)
+    ELSE TRAN_AMT 
+    htd.part_tran_type, 
+    htd.tran_date, 
+    htd.TRAN_CRNCY_CODE, 
+    htd.tran_amt,
+    gam.SCHM_TYPE,
+    gam.SCHM_CODE,
+    GSP.SCHM_DESC   
+FROM 
+    imke.asha_htd_2022@EDWDBLNK htd
+LEFT JOIN 
+    tbaadm.gam@fin10 gam 
+ON 
+    htd.acid = gam.acid 
+LEFT JOIN 
+    TBAADM.GSP@FIN10 GSP 
+ON 
+    GSP.SCHM_CODE = gam.SCHM_CODE
+LEFT JOIN tbaadm.rth@FIN10 rth 
+ON rth.FXD_CRNCY_CODE = htd.TRAN_CRNCY_CODE;
+WHERE 
+    gam.cif_id IN (SELECT cif_id FROM DEMOGRAPHICS360)
+)
+
+-----------OTG-----------
+--------------------------
+
+
+---------------TRANSACTION AMOUNT /MIN/MAX/AVG/REVENUE------
+
+SELECT
+    customer_cif,
+    COUNT(1)                      num_trx,
+    SUM(tran_amount) / COUNT(1)   avg_tran_amount,
+    MAX(tran_amount),
+    MIN(tran_amount),
+    MAX(total_revenue),
+    MIN(total_revenue),
+    SUM(total_revenue) / COUNT(1) avg_revenue
+    sum(TOTAL_REVENUE) as total_revenue
+FROM
+    edw.fct_otg_transactions
+WHERE
+    customer_cif IN (
+        SELECT
+            cif_id
+        FROM
+            imke.asha_mastercte
+    )
+GROUP BY
+    customer_cif
+
+
+--------LOANS -----
+--------------------------
+
+
+
+-------------MAX/MIN/AVG/DPD----------
+
+
+SELECT
+  CIF_id,
+  MAX(CASE WHEN LoanType = 'Asset Finance' THEN dis_amt END) AS MaxDisbursedAmount_AssetFinance,
+  MIN(CASE WHEN LoanType = 'Asset Finance' THEN dis_amt END) AS MinDisbursedAmount_AssetFinance,
+  AVG(CASE WHEN LoanType = 'Asset Finance' THEN dis_amt END) AS AvgDisbursedAmount_AssetFinance,
+  MAX(CASE WHEN LoanType = 'Hire Purchase' THEN dis_amt END) AS MaxDisbursedAmount_HirePurchase,
+  MIN(CASE WHEN LoanType = 'Hire Purchase' THEN dis_amt END) AS MinDisbursedAmount_HirePurchase,
+  AVG(CASE WHEN LoanType = 'Hire Purchase' THEN dis_amt END) AS AvgDisbursedAmount_HirePurchase,
+  MAX(CASE WHEN LoanType = 'Bond Leverage' THEN dis_amt END) AS MaxDisbursedAmount_BondLeverage,
+  MIN(CASE WHEN LoanType = 'Bond Leverage' THEN dis_amt END) AS MinDisbursedAmount_BondLeverage,
+  AVG(CASE WHEN LoanType = 'Bond Leverage' THEN dis_amt END) AS AvgDisbursedAmount_BondLeverage,
+  MAX(CASE WHEN LoanType = 'Term Loan' THEN dis_amt END) AS MaxDisbursedAmount_TermLoan,
+  MIN(CASE WHEN LoanType = 'Term Loan' THEN dis_amt END) AS MinDisbursedAmount_TermLoan,
+  AVG(CASE WHEN LoanType = 'Term Loan' THEN dis_amt END) AS AvgDisbursedAmount_TermLoan,
+  MAX(CASE WHEN LoanType = 'Staff Loans' THEN dis_amt END) AS MaxDisbursedAmount_StaffLoans,
+  MIN(CASE WHEN LoanType = 'Staff Loans' THEN dis_amt END) AS MinDisbursedAmount_StaffLoans,
+  AVG(CASE WHEN LoanType = 'Staff Loans' THEN dis_amt END) AS AvgDisbursedAmount_StaffLoans,
+  MAX(CASE WHEN LoanType = 'IPF' THEN dis_amt END) AS MaxDisbursedAmount_IPF,
+  MIN(CASE WHEN LoanType = 'IPF' THEN dis_amt END) AS MinDisbursedAmount_IPF,
+  AVG(CASE WHEN LoanType = 'IPF' THEN dis_amt END) AS AvgDisbursedAmount_IPF,
+  MAX(CASE WHEN LoanType = 'Housing' THEN dis_amt END) AS MaxDisbursedAmount_Housing,
+  MIN(CASE WHEN LoanType = 'Housing' THEN dis_amt END) AS MinDisbursedAmount_Housing,
+  AVG(CASE WHEN LoanType = 'Housing' THEN dis_amt END) AS AvgDisbursedAmount_Housing,
+  MAX(CASE WHEN LoanType = 'Personal Loans' THEN dis_amt END) AS MaxDisbursedAmount_PersonalLoans,
+  MIN(CASE WHEN LoanType = 'Personal Loans' THEN dis_amt END) AS MinDisbursedAmount_PersonalLoans,
+  AVG(CASE WHEN LoanType = 'Personal Loans' THEN dis_amt END) AS AvgDisbursedAmount_PersonalLoans,
+  MAX(CASE WHEN LoanType = 'Short Term Loans' THEN dis_amt END) AS MaxDisbursedAmount_ShortTermLoans,
+  MIN(CASE WHEN LoanType = 'Short Term Loans' THEN dis_amt END) AS MinDisbursedAmount_ShortTermLoans,
+  AVG(CASE WHEN LoanType = 'Short Term Loans' THEN dis_amt END) AS AvgDisbursedAmount_ShortTermLoans,
+  MAX(CASE WHEN LoanType = 'Construction Loan' THEN dis_amt END) AS MaxDisbursedAmount_ConstructionLoan,
+  MIN(CASE WHEN LoanType = 'Construction Loan' THEN dis_amt END) AS MinDisbursedAmount_ConstructionLoan,
+  AVG(CASE WHEN LoanType = 'Construction Loan' THEN dis_amt END) AS AvgDisbursedAmount_ConstructionLoan,
+  MAX(CASE WHEN LoanType = 'Stock Finance Loan' THEN dis_amt END) AS MaxDisbursedAmount_StockFinanceLoan,
+  MIN(CASE WHEN LoanType = 'Stock Finance Loan' THEN dis_amt END) AS MinDisbursedAmount_StockFinanceLoan,
+  AVG(CASE WHEN LoanType = 'Stock Finance Loan' THEN dis_amt END) AS AvgDisbursedAmount_StockFinanceLoan
+FROM (
+  SELECT
+    a.CIF_id,
+    CASE
+      WHEN gsp.SCHM_DESC IN ('ASSET FINANCE PUBLIC- EMI - FCY', 'ASSET FINANCE PUBLIC- EMI - LCY') THEN 'Asset Finance'
+      WHEN gsp.SCHM_DESC IN ('HIRE PURCHASE - STAFF FLAT- LCY', 'HIRE PURCHASE -GROUP COMPANIES - LCY', 'HIRE PURCHASE LOAN - FCY', 'HIRE PURCHASE LOAN - LCY', 'HIRE PURCHASE LOAN REDUCING BALANCE -STAFF LCY', 'HP LOAN REDUCING BALANCE - FCY', 'HP LOAN REDUCING BALANCE - LCY') THEN 'Hire Purchase'
+      WHEN gsp.SCHM_DESC IN ('BOND LEVERAGE LOAN - FCY', 'BOND LEVERAGE LOAN - LCY', 'BOND LEVERAGE  LOAN - FCY') THEN 'Bond Leverage'
+      WHEN gsp.SCHM_DESC IN ('TERM LOAN – LAD FCY', 'TERM LOAN – LAD LCY', 'TERM LOAN- EMI- FCY', 'TERM LOAN- EMI- LCY', 'TERM LOAN- NON EMI - FCY', 'TERM LOAN- NON EMI - LCY') THEN 'Term Loan'
+      WHEN gsp.SCHM_DESC IN ('STAFF EDUCATION LOAN - EMI - LCY', 'STAFF PERSONAL LOAN-REVAM - LCY', 'STAFF PLOT LOAN - EMI - LCY') THEN 'Staff Loans'
+      WHEN gsp.SCHM_DESC IN ('BOND LEVERAGE LOAN - LCY') THEN 'Bond Leverage'
+      WHEN gsp.SCHM_DESC IN ('IPF -REDUCING BALANCE  STAFF- LCY', 'IPF -REDUCING BALANCE - LCY', 'IPF FLAT RATE  - FCY', 'IPF FLAT RATE  - LCY', 'IPF FLAT RATE  STAFF- LCY') THEN 'IPF'
+      WHEN gsp.SCHM_DESC IN ('HOUSING LOAN - GEN PUBLIC - FCY', 'HOUSING LOAN - GEN PUBLIC - LCY', 'HOUSING LOAN - STAFF EMI - LCY', 'HOUSING LOANS STAFF NON EMI - LCY') THEN 'Housing'
+      WHEN gsp.SCHM_DESC IN ('PERSONAL LOAN - GROUP COM - LCY', 'PERSONAL LOAN GENERAL PUBLIC - LCY') THEN 'Personal Loans'
+      WHEN gsp.SCHM_DESC IN ('SHORT TERM LOAN - FCY', 'SHORT TERM LOAN - LCY') THEN 'Short Term Loans'
+      WHEN gsp.SCHM_DESC IN ('CONSTRUCTION LOAN - STAFF - EMI - LCY', 'GOVERNMENT SCHEME WORK PLACE BANKING FACILITY') THEN gsp.SCHM_DESC
+      WHEN gsp.SCHM_DESC = 'STOCK FINANCE LOAN - LCY' THEN 'Stock Finance Loan'
+      ELSE 'Other'
+    END AS LoanType,
+    lam.dis_amt
+  FROM
+    tbaadm.GAM@fin10 a
+  LEFT JOIN
+    tbaadm.GSP@fin10 gsp ON a.SCHM_CODE = gsp.SCHM_CODE
+  LEFT JOIN
+    tbaadm.LAM@fin10 lam ON TRIM(lam.ACID) = TRIM(a.ACID)
+  LEFT JOIN (
+    SELECT
+      ldt.ACID,
+      NVL(MAX(FLOOR((DECODE(ldt.LAST_ADJ_DATE, '', SYSDATE, ldt.LAST_ADJ_DATE) - ldt.DMD_EFF_DATE))), 0) AS MAX_DATE
+    FROM
+      tbaadm.LDT@fin10 ldt
+    GROUP BY
+      ldt.ACID
+  ) g ON g.ACID = a.ACID
+  WHERE
+    lam.dis_amt > 10
+) subquery
+GROUP BY
+  CIF_id;
+
+
+
+
+----------INTERACTIONS-------
+----------------------------------------
+
+-------COUNT OF REQUESTS----------
+---------------------------------------
+
+
+SELECT
+  CUSTOMER_ID,
+  TO_CHAR(TO_DATE(INTERACTION_DATE, 'DD-MON-YY'), 'YYYY-MM') AS interaction_month,
+  SUM(
+    CASE
+      WHEN LOWER(CALL_SUMMARY) LIKE '%request%' THEN 1
+      ELSE 0
+    END
+  ) AS request_count,
+  SUM(
+    CASE
+      WHEN LOWER(CALL_SUMMARY) NOT LIKE '%request%' THEN 1
+      ELSE 0
+    END
+  ) AS non_request_count,
+  SUM(
+    CASE
+      WHEN LOWER(CATEGORY) NOT LIKE '%mpesa%' THEN 1
+      ELSE 0
+    END
+  ) AS MPESA_INTERACTION_COUNT,
+  SUM(
+    CASE
+      WHEN LOWER(CATEGORY) NOT LIKE '%card%' THEN 1
+      ELSE 0
+    END
+  ) AS CARD_INTERACTION_COUNT
+FROM 
+  ANALYTICS.INTERACTIONS
+WHERE 
+  TO_DATE(INTERACTION_DATE, 'DD-MON-YY') BETWEEN TO_DATE('01-JAN-22', 'DD-MON-YY') AND TO_DATE('31-DEC-22', 'DD-MON-YY')
+  AND CUSTOMER_ID IN (SELECT CIF_ID FROM demographics360)
+GROUP BY
+  CUSTOMER_ID,
+  TO_CHAR(TO_DATE(INTERACTION_DATE, 'DD-MON-YY'), 'YYYY-MM')
+ORDER BY
+  CUSTOMER_ID,
+  interaction_month;
+
+------------------CAMPAIGNS----------------
+-----------------------------------------------
+
+-----SMS---
+
+SELECT SMS_CAMPAIGN_EVENTS.CIF, COUNT(SMS_CAMPAIGN_EVENTS.ID) AS id_count
+FROM INTERGRATION.SMS_CAMPAIGN_EVENTS@ICUBEPRD2IL
+JOIN INTERGRATION.SMS_CAMPAIGNS@ICUBEPRD2IL
+  ON SMS_CAMPAIGN_EVENTS.SMS_CAMPAIGN = SMS_CAMPAIGNS.ID
+WHERE SMS_CAMPAIGN_EVENTS.CIF IS NOT NULL
+  AND TRUNC(SENT_AT) BETWEEN TO_DATE('01/01/2022', 'MM/DD/YYYY') AND TO_DATE('12/31/2022', 'MM/DD/YYYY')
+  AND SMS_CAMPAIGN_EVENTS.CIF IN (select cif_id from demographics360) 
+GROUP BY SMS_CAMPAIGN_EVENTS.CIF;
+
+----EMAIL—
+  SELECT EMAIL_CAMPAIGN_EVENTS.CIF, 
+         TO_CHAR(EMAIL_CAMPAIGN_EVENTS.TIMESTAMP, 'YYYY-MM') AS Month, 
+         COUNT(EMAIL_CAMPAIGN_EVENTS.ID) AS id_count
+  FROM INTERGRATION.EMAIL_CAMPAIGN_EVENTS@ICUBEPRD2IL
+  JOIN INTERGRATION.EMAIL_CAMPAIGNS@ICUBEPRD2IL ON EMAIL_CAMPAIGN_EVENTS.EMAIL_CAMPAIGN_ID = EMAIL_CAMPAIGNS.ID
+  WHERE EMAIL_CAMPAIGN_EVENTS.CIF IS NOT NULL
+  AND TRUNC(EMAIL_CAMPAIGN_EVENTS.TIMESTAMP) BETWEEN TO_DATE('01/01/2022', 'MM/DD/YYYY') AND TO_DATE('12/31/2022', 'MM/DD/YYYY')
+  AND EMAIL_CAMPAIGN_EVENTS.CIF IN (select cif_id from demographics360)
+  GROUP BY EMAIL_CAMPAIGN_EVENTS.CIF, EMAIL_CAMPAIGN_EVENTS.TIMESTAMP
+
+
+---------------CRB--------------
+------------------------------------
+
+
+
+-----AGE ON CRB ——————————————
+------------------------------------------------------------------
+
+
+   
+   WITH crb_age AS (
+    SELECT 
+        NATIONALID,
+        CASE 
+            WHEN REGEXP_LIKE(LISTINGDATE, '^\d{2}-\d{2}-\d{4}$') 
+                THEN TO_DATE(LISTINGDATE, 'DD-MM-YYYY') 
+            ELSE NULL 
+        END AS LISTINGDATE
+    FROM 
+        imke.tmp_crb_accounts@edwdblnk
+),
+crb_age2 AS (
+    SELECT 
+        NATIONALID,
+        (SYSDATE - LISTINGDATE) / 365 AS YEARS_PASSED
+    FROM 
+        crb_age
+)
+SELECT 
+    NATIONALID,
+    CASE WHEN YEARS_PASSED < 1 THEN 1 ELSE 0 END AS "1_year_length_of_bureau_history",
+    CASE WHEN YEARS_PASSED BETWEEN 2 AND 3 THEN 1 ELSE 0 END AS "2-3_years",
+    CASE WHEN YEARS_PASSED BETWEEN 3 AND 5 THEN 1 ELSE 0 END AS "3-5_years",
+    CASE WHEN YEARS_PASSED >= 5 THEN 1 ELSE 0 END AS "5+_years"
+FROM 
+    crb_age2;
+
+
+————————————————————
+—MAX DPD
+-----------------------------------------
+
+
+WITH cte AS (
+SELECT
+	NATIONALID,
+	TO_NUMBER(
+            CASE 
+                WHEN WORSTDAYSINARREARS = 'NA' THEN '0'
+                ELSE WORSTDAYSINARREARS
+            END
+        ) AS WORSTDAYSINARREARS,
+	TO_DATE(LISTINGDATE, 'DD-MM-YYYY') AS LISTINGDATE
+FROM
+	imke.tmp_crb_accounts@edwdblnk
+),
+date_to_check AS (
+SELECT
+	TO_DATE('01-02-2022', 'DD-MM-YYYY') - 365 AS date_year_ago,
+	TO_DATE('01-02-2022', 'DD-MM-YYYY') AS date_check
+FROM
+	dual
+)
+SELECT
+	NATIONALID,
+	CASE
+		WHEN SUM(CASE WHEN WORSTDAYSINARREARS BETWEEN 30 AND 59 
+                        AND LISTINGDATE BETWEEN (SELECT date_year_ago FROM date_to_check) 
+                                           AND (SELECT date_check FROM date_to_check)
+                       THEN 1 
+                       ELSE 0 
+                  END) > 0 
+         THEN 1
+		ELSE 0
+	END AS daysPastDueBetween30to59_in_12_months,
+	CASE
+		WHEN SUM(CASE WHEN WORSTDAYSINARREARS BETWEEN 60 AND 90 
+                        AND LISTINGDATE BETWEEN (SELECT date_year_ago FROM date_to_check) 
+                                           AND (SELECT date_check FROM date_to_check)
+                       THEN 1 
+                       ELSE 0 
+                  END) > 0 
+         THEN 1
+		ELSE 0
+	END AS dpd60_90_in_12_months,
+	CASE
+		WHEN SUM(CASE WHEN WORSTDAYSINARREARS > 90 
+                        AND LISTINGDATE BETWEEN (SELECT date_year_ago FROM date_to_check) 
+                                           AND (SELECT date_check FROM date_to_check)
+                       THEN 1 
+                       ELSE 0 
+                  END) > 0 
+         THEN 1
+		ELSE 0
+	END AS dpd_over_90_in_12_months
+FROM
+	cte
+GROUP BY
+	NATIONALID;
+
+
+
+------------------------------------------
+--AMOUNT MAX, MIN ,AVG LOAN————
+   ----------------------------------------------------------------
+
+
+WITH cte AS (
+    SELECT 
+        NATIONALID,
+        PRODUCT,
+        CASE 
+            WHEN REGEXP_LIKE(PRINCIPALAMOUNT, '^\d+(\.\d+)?$') 
+                THEN TO_NUMBER(PRINCIPALAMOUNT) 
+            ELSE NULL 
+        END AS PRINCIPALAMOUNT
+    FROM 
+        imke.tmp_crb_accounts@edwdblnk
+)
+SELECT 
+    NATIONALID,
+    PRODUCT,
+    MAX(PRINCIPALAMOUNT) AS MAX_AMOUNT,
+    MIN(PRINCIPALAMOUNT) AS MIN_AMOUNT,
+    AVG(PRINCIPALAMOUNT) AS AVG_AMOUNT
+FROM 
+    cte
+GROUP BY 
+    NATIONALID,
+    PRODUCT;
+
+
+-------PRODUCTCHECK --------------------------
+
+————
+   
+WITH cte AS (
+    SELECT 
+        NATIONALID,
+        CASE 
+            WHEN PRODUCT LIKE '%Mobile%' OR 
+                 PRODUCT LIKE '%Personal%' OR 
+                 PRODUCT LIKE '%Business%' OR 
+                 PRODUCT LIKE '%Credit%' OR 
+                 PRODUCT LIKE '%Mortgage%' OR 
+                 PRODUCT LIKE '%asset finance%' OR 
+                 PRODUCT LIKE '%Trade finance%'
+                THEN 1 
+            ELSE 0 
+        END AS PRODUCT_EXISTS,
+        CASE 
+            WHEN REGEXP_LIKE(PRINCIPALAMOUNT, '^\d+(\.\d+)?$') 
+                THEN TO_NUMBER(PRINCIPALAMOUNT) 
+            ELSE NULL 
+        END AS PRINCIPALAMOUNT
+    FROM 
+        imke.tmp_crb_accounts@edwdblnk
+)
+SELECT 
+    NATIONALID,
+    MAX(PRODUCT_EXISTS) AS PRODUCT_EXISTS,
+    MAX(PRINCIPALAMOUNT) AS MAX_AMOUNT,
+    MIN(PRINCIPALAMOUNT) AS MIN_AMOUNT,
+    AVG(PRINCIPALAMOUNT) AS AVG_AMOUNT
+FROM 
+    cte
+GROUP BY 
+    NATIONALID;
+
+—————count of lenders——
+———
+
+
+SELECT DISTINCT NATIONALID, COUNT(DISTINCT LENDER) as Num_Lenders
+FROM imke.tmp_crb_accounts@edwdblnk
+WHERE TRIM(UPPER(LENDER)) <> 'I&M BANK LIMITED'
+GROUP BY NATIONALID;
+
+
+-------product with max dpd ---------
+
+
+WITH cte AS (
+    SELECT
+        NATIONALID,
+        PRODUCT,
+        TO_NUMBER(
+            CASE 
+                WHEN WORSTDAYSINARREARS = 'NA' THEN '0'
+                ELSE WORSTDAYSINARREARS
+            END
+        ) AS WORSTDAYSINARREARS,
+        TO_DATE(LISTINGDATE, 'DD-MM-YYYY') AS LISTINGDATE,
+        ROW_NUMBER() OVER (PARTITION BY NATIONALID ORDER BY TO_NUMBER(
+            CASE 
+                WHEN WORSTDAYSINARREARS = 'NA' THEN '0'
+                ELSE WORSTDAYSINARREARS
+            END
+        ) DESC) as rn
+    FROM
+        imke.tmp_crb_accounts@edwdblnk
+),
+date_to_check AS (
+    SELECT
+        TO_DATE('01-02-2022', 'DD-MM-YYYY') - 365 AS date_year_ago,
+        TO_DATE('01-02-2022', 'DD-MM-YYYY') AS date_check
+    FROM
+        dual
+)
+SELECT
+    NATIONALID,
+    PRODUCT,
+    WORSTDAYSINARREARS,
+    LISTINGDATE
+FROM
+    cte
+WHERE
+    rn = 1 AND
+    LISTINGDATE BETWEEN (SELECT date_year_ago FROM date_to_check) AND (SELECT date_check FROM date_to_check);
+
+
